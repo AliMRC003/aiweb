@@ -1,72 +1,80 @@
 'use client';
 
-import { useState } from 'react';
-import { FolderIcon, DocumentIcon, ChevronRightIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { useState, useEffect } from 'react';
+import { ChevronRight, ChevronDown, File, Folder } from 'lucide-react';
 
 interface FileNode {
   name: string;
+  path: string;
   type: 'file' | 'directory';
   children?: FileNode[];
 }
 
 interface FileTreeProps {
-  data: FileNode;
   onFileSelect: (path: string) => void;
+  projectId: string;
+  userId: string;
 }
 
-export default function FileTree({ data, onFileSelect }: FileTreeProps) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+export default function FileTree({ onFileSelect, projectId, userId }: FileTreeProps) {
+  const [files, setFiles] = useState<FileNode[]>([]);
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
-  const toggleExpand = (path: string) => {
-    setExpanded(prev => ({
-      ...prev,
-      [path]: !prev[path]
-    }));
+  useEffect(() => {
+    fetchFiles();
+  }, [projectId, userId]);
+
+  const fetchFiles = async () => {
+    try {
+      const response = await fetch(`/api/list-files?userId=${userId}&projectId=${projectId}`);
+      if (!response.ok) throw new Error('Failed to fetch files');
+      const data = await response.json();
+      setFiles(data);
+    } catch (error) {
+      console.error('Error fetching files:', error);
+    }
   };
 
-  const renderNode = (node: FileNode, path: string = '') => {
-    const currentPath = path ? `${path}/${node.name}` : node.name;
-    const isExpanded = expanded[currentPath];
+  const toggleDir = (path: string) => {
+    setExpandedDirs(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
 
-    if (node.type === 'directory') {
-      return (
-        <div key={currentPath} className="ml-4">
-          <div
-            className="flex items-center py-1 px-2 hover:bg-gray-100 cursor-pointer rounded"
-            onClick={() => toggleExpand(currentPath)}
-          >
-            {isExpanded ? (
-              <ChevronDownIcon className="h-4 w-4 text-gray-500" />
-            ) : (
-              <ChevronRightIcon className="h-4 w-4 text-gray-500" />
-            )}
-            <FolderIcon className="h-4 w-4 text-yellow-500 ml-1" />
-            <span className="ml-2 text-sm">{node.name}</span>
-          </div>
-          {isExpanded && node.children && (
-            <div className="ml-4">
-              {node.children.map(child => renderNode(child, currentPath))}
-            </div>
-          )}
-        </div>
-      );
-    }
+  const renderNode = (node: FileNode) => {
+    const isExpanded = expandedDirs.has(node.path);
+    const isDirectory = node.type === 'directory';
 
     return (
-      <div
-        key={currentPath}
-        className="flex items-center py-1 px-2 hover:bg-gray-100 cursor-pointer rounded ml-4"
-        onClick={() => onFileSelect(currentPath)}
-      >
-        <DocumentIcon className="h-4 w-4 text-blue-500" />
-        <span className="ml-2 text-sm">{node.name}</span>
+      <div key={node.path} className="ml-4">
+        <div 
+          className="flex items-center py-1 px-2 hover:bg-gray-700 rounded cursor-pointer"
+          onClick={() => isDirectory ? toggleDir(node.path) : onFileSelect(node.path)}
+        >
+          {isDirectory ? (
+            <>
+              {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              <Folder className="w-4 h-4 ml-1" />
+            </>
+          ) : (
+            <File className="w-4 h-4 ml-5" />
+          )}
+          <span className="ml-2 text-sm">{node.name}</span>
+        </div>
+        {isDirectory && isExpanded && node.children?.map(child => renderNode(child))}
       </div>
     );
   };
 
   return (
-    <div className="w-64 h-full bg-white border-r border-gray-200 overflow-y-auto">
-      {renderNode(data)}
+    <div className="w-64 h-full bg-gray-800 text-gray-200 p-2 overflow-auto">
+      {files.map(node => renderNode(node))}
     </div>
   );
 } 
