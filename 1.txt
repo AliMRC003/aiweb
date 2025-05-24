@@ -1,0 +1,176 @@
+
+
+
+export default function HomePage() {
+  const [userId, setUserId] = useState('kullanici_id_123'); // Giriş sonrası alınacak
+  const [projectId, setProjectId] = useState('my-blog'); // Proje seçimi/oluşturma sonrası
+  const [filePath, setFilePath] = useState('index.html'); // Dosya ağacından seçilecek
+  const [code, setCode] = useState('// Lütfen bir proje yükleyin veya oluşturun');
+  const [originalCode, setOriginalCode] = useState('');
+  const [command, setCommand] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [diffResult, setDiffResult] = useState(null);
+
+  // Proje dosyasını yükleme (örnek)
+  useEffect(() => {
+    async function fetchCode() {
+      if (!userId || !projectId || !filePath) return;
+      setIsLoading(true);
+      setError(null);
+      try {
+        // Bu API rotası backend'e yönlendirme yapacak
+        const response = await fetch(`/api/file-proxy?userId=${userId}&projectId=${projectId}&filePath=${filePath}`);
+        if (!response.ok) {
+          throw new Error(`Dosya yüklenemedi: ${response.statusText}`);
+        }
+        const data = await response.json();
+        setCode(data.content);
+        setOriginalCode(data.content); // Diff için orijinal kodu sakla
+      } catch (err) {
+        setError(err.message);
+        setCode(`// Hata: ${err.message}`);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    // Örnek olarak başlangıçta bir dosya yükleyelim (fetchCode yerine)
+    const initialCode = `<html>
+  <head>
+    <title>Benim Blogum</title>
+  </head>
+  <body>
+    <h1>Hoş Geldiniz!</h1>
+  </body>
+</html>`;
+    setCode(initialCode);
+    setOriginalCode(initialCode);
+    // fetchCode(); // Gerçek bir dosya yükleme için bu satırı aktif edin.
+
+  }, [userId, projectId, filePath]);
+
+
+  const handleSendCommand = async () => {
+    if (!command.trim()) {
+      alert('Lütfen bir komut girin.');
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    setDiffResult(null);
+
+    try {
+      const response = await fetch('/api/execute-command', { // Next.js API rotası
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          projectId,
+          filePath,
+          command,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Komut işlenirken bir hata oluştu: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      setCode(result.newCode);
+      setDiffResult({ oldCode: originalCode, newCode: result.newCode, diff: result.diff });
+      setOriginalCode(result.newCode);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCreateProject = async () => {
+    const newProjectId = prompt("Yeni proje adı girin (örn: my-new-app):");
+    if (!newProjectId || !newProjectId.trim()) return;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/create-project', { // Next.js API rotası
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, projectId: newProjectId }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Proje oluşturulamadı.");
+      }
+      const data = await response.json();
+      alert(data.message);
+      setProjectId(newProjectId);
+      setFilePath('index.html'); // Varsayılan dosya
+      setCode(data.initialContent || '// Yeni proje oluşturuldu. index.html boş.');
+      setOriginalCode(data.initialContent || '// Yeni proje oluşturuldu. index.html boş.');
+      setDiffResult(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+
+  return (
+    <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
+      <h1>Cursor AI Web Kodlama Platformu</h1>
+      <p>Kullanıcı: {userId}, Proje: {projectId}, Dosya: {filePath}</p>
+
+      <button onClick={handleCreateProject} disabled={isLoading}>
+        Yeni Proje Oluştur
+      </button>
+      <hr />
+
+      <div>
+        <h3>Kod Editörü ({filePath})</h3>
+        <CodeEditor value={code} onChange={setCode} />
+        {/* <MonacoEditor
+          height="400"
+          language="html"
+          theme="vs-dark"
+          value={code}
+          onChange={setCode}
+          options={{ selectOnLineNumbers: true }}
+        /> */}
+      </div>
+
+      <div style={{ marginTop: '20px' }}>
+        <h3>AI Komutu</h3>
+        <input
+          type="text"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder="Örn: 'navbar ekle' veya 'tüm h1 başlıklarını mavi yap'"
+          style={{ width: 'calc(100% - 100px)', padding: '8px' }}
+          disabled={isLoading}
+        />
+        <button onClick={handleSendCommand} disabled={isLoading} style={{ padding: '8px', marginLeft: '10px' }}>
+          {isLoading ? 'İşleniyor...' : 'Gönder'}
+        </button>
+      </div>
+
+      {error && <p style={{ color: 'red', marginTop: '10px' }}>Hata: {error}</p>}
+
+      {diffResult && (
+        <div style={{ marginTop: '20px' }}>
+          <h3>Değişiklikler (Öncesi/Sonrası)</h3>
+          <DiffViewer oldCode={diffResult.oldCode} newCode={diffResult.newCode} />
+          <h4>Ham Diff:</h4>
+          <pre style={{ border: '1px solid #ccc', padding: '10px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {diffResult.diff}
+          </pre>
+          <button onClick={() => { alert('Değişiklikler onaylandı (simülasyon)'); }} style={{marginTop: '10px'}}>
+            Değişiklikleri Onayla
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

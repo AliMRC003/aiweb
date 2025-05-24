@@ -1,0 +1,316 @@
+
+      }
+      return res.status(200).json(data);
+    } catch (error) {
+      console.error('Error forwarding to backend (execute-command):', error);
+      return res.status(500).json({ error: 'Internal server error while forwarding request.' });
+    }
+  } else {
+    res.setHeader('Allow', ['POST']);
+    res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+}
+
+frontend/pages/api/create-project.js
+(Bu dosya, proje oluşturma isteğini backend Flask sunucusuna yönlendirir.)
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5001';
+
+export default async function handler(req, res) {
+  if (req.method === 'POST') {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/create-project`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        return res.status(response.status).json(data);
+      }
+      return res.status(200).json(data);
+    } catch (error) {
+      console.error('Error forwarding to backend (create-project):', error);
+      return res.status(500).json({ error: 'Internal server error while forwarding project creation request.' });
+    }
+  } else {
+    res.setHeader('Allow', ['POST']);
+    res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+}
+
+frontend/pages/api/file-proxy.js (Ekstra - Dosya okuma için proxy)
+(Bu dosya, dosya okuma isteğini backend Flask sunucusuna yönlendirir. index.js içindeki fetchCode fonksiyonunda kullanılabilir.)
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5001';
+
+export default async function handler(req, res) {
+  if (req.method === 'GET') {
+    const { userId, projectId, filePath } = req.query;
+    try {
+      // Backend'e dosya içeriğini almak için istek at
+      const backendResponse = await fetch(`${BACKEND_URL}/api/get-file-content?userId=${userId}&projectId=${projectId}&filePath=${filePath}`);
+      
+      const data = await backendResponse.json();
+
+      if (!backendResponse.ok) {
+        return res.status(backendResponse.status).json(data);
+      }
+      return res.status(200).json(data);
+
+    } catch (error) {
+      console.error('Error forwarding to backend (get-file-content):', error);
+      return res.status(500).json({ error: 'Internal server error while fetching file content.' });
+    }
+  } else {
+    res.setHeader('Allow', ['GET']);
+    res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+}
+
+2. Backend (Python / Flask)
+backend/app.py
+import os
+import json
+import subprocess # VM üzerindeki script'leri çağırmak için
+import difflib # Diff oluşturmak için
+from flask import Flask, request, jsonify
+from flask_cors import CORS # Geliştirme sırasında CORS için
+import shutil # Dosya işlemleri için
+
+app = Flask(__name__)
+CORS(app) # Geliştirme ortamında frontend'den gelen isteklere izin vermek için
+
+# Proje ana dizinini al (bu dosyanın bulunduğu dizinin bir üstü)
+PROJECT_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Kullanıcı proje dosyalarının temel dizini
+# Güvenlik için bu dizinin web sunucusu tarafından doğrudan erişilebilir olmaması önemlidir.
+# Bu örnekte backend dizini içinde bir alt dizin kullanılıyor, bu üretim için uygun değildir.
+# Örnek: USER_PROJECTS_BASE_DIR = "/var/cursor_ai_users"
+USER_PROJECTS_BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_projects")
+
+# VM scriptinin yolu (backend/app.py'ye göreceli olarak ../vm_scripts/run_cursor_command.py)
+VM_SCRIPT_PATH = os.path.join(PROJECT_ROOT_DIR, "vm_scripts", "run_cursor_command.py")
+
+
+# --- Yardımcı Fonksiyonlar (utils/*.py dosyalarına taşınabilir) ---
+def sanitize_path_component(component):
+    """Path traversal saldırılarını önlemek için bileşeni temizler."""
+    # Sadece alfanumerik, tire ve alt çizgiye izin ver
+    import re
+    return re.sub(r'[^a-zA-Z0-9_-]', '', component)
+
+def get_user_project_path(user_id, project_id):
+    """Kullanıcının proje klasör yolunu döndürür."""
+    safe_user_id = sanitize_path_component(user_id)
+    safe_project_id = sanitize_path_component(project_id)
+    if not safe_user_id or not safe_project_id: # Eğer temizleme sonrası boş kalırsa
+        raise ValueError("Geçersiz kullanıcı ID veya proje ID.")
+    return os.path.join(USER_PROJECTS_BASE_DIR, safe_user_id, safe_project_id)
+
+def get_file_path_in_project(user_id, project_id, file_path_relative):
+    """Proje içindeki belirli bir dosyanın tam yolunu döndürür ve güvenliği kontrol eder."""
+    project_dir = get_user_project_path(user_id, project_id)
+    
+    # file_path_relative'in ../ içermediğinden ve boş olmadığından emin ol
+    if ".." in file_path_relative.split(os.path.sep) or not file_path_relative:
+        raise ValueError("Geçersiz göreceli dosya yolu.")
+
+    # Normalize et ve proje dizini içinde olup olmadığını kontrol et
+    # os.path.join, baştaki / karakterini dikkate alır, bu yüzden file_path_relative'i temizle
+    clean_relative_path = os.path.normpath(os.path.join('/', file_path_relative)).lstrip('/')
+
+    abs_file_path = os.path.abspath(os.path.join(project_dir, clean_relative_path))
+    
+    if not abs_file_path.startswith(os.path.abspath(project_dir)):
+        raise ValueError("Dosya yolu proje dizini dışında.")
+    return abs_file_path
+
+def backup_file(file_path_abs):
+    """Dosyanın yedeğini alır."""
+    if not os.path.exists(file_path_abs):
+        return None
+    backup_path = file_path_abs + ".backup_" + str(int(shutil.time.time())) # Benzersiz yedek ismi
+    try:
+        shutil.copy2(file_path_abs, backup_path)
+        app.logger.info(f"Dosya yedeklendi: {file_path_abs} -> {backup_path}")
+        return backup_path
+    except Exception as e:
+        app.logger.error(f"Yedekleme hatası {file_path_abs}: {e}")
+        return None
+
+def generate_diff(old_content, new_content):
+    """İki metin arasında diff oluşturur."""
+    diff = difflib.unified_diff(
+        old_content.splitlines(keepends=True),
+        new_content.splitlines(keepends=True),
+        fromfile='önceki',
+        tofile='sonraki',
+    )
+    return "".join(diff)
+
+# --- API Endpoint'leri ---
+@app.route('/api/create-project', methods=['POST'])
+def create_project_route():
+    data = request.json
+    user_id = data.get('userId')
+    project_id = data.get('projectId')
+
+    if not user_id or not project_id:
+        return jsonify({"error": "Kullanıcı ID ve Proje ID gereklidir."}), 400
+
+    try:
+        project_path = get_user_project_path(user_id, project_id)
+        os.makedirs(project_path, exist_ok=True)
+        
+        default_file_path = os.path.join(project_path, 'index.html')
+        initial_content = f"<html>\n<head>\n  <title>{sanitize_path_component(project_id)}</title>\n</head>\n<body>\n  <h1>{sanitize_path_component(project_id)} projesine hoş geldiniz!</h1>\n</body>\n</html>"
+        if not os.path.exists(default_file_path):
+            with open(default_file_path, 'w', encoding='utf-8') as f:
+                f.write(initial_content)
+        app.logger.info(f"Proje oluşturuldu/mevcut: {project_path}")
+        return jsonify({
+            "message": f"'{sanitize_path_component(project_id)}' projesi '{sanitize_path_component(user_id)}' için oluşturuldu veya zaten mevcut.",
+            "projectPath": project_path, # Sadece bilgilendirme amaçlı, frontend'e tam path göndermek riskli olabilir.
+            "initialContent": initial_content
+        }), 201
+    except ValueError as ve:
+        app.logger.error(f"Proje oluşturma hatası (ValueError): {str(ve)}")
+        return jsonify({"error": str(ve)}), 400
+    except Exception as e:
+        app.logger.error(f"Proje oluşturulurken hata: {str(e)}")
+        return jsonify({"error": f"Proje oluşturulurken sunucu hatası: {str(e)}"}), 500
+
+@app.route('/api/get-file-content', methods=['GET'])
+def get_file_content_route():
+    user_id = request.args.get('userId')
+    project_id = request.args.get('projectId')
+    file_path_relative = request.args.get('filePath')
+
+    if not all([user_id, project_id, file_path_relative]):
+        return jsonify({"error": "Eksik parametreler: userId, projectId, filePath gereklidir."}), 400
+
+    try:
+        abs_target_file = get_file_path_in_project(user_id, project_id, file_path_relative)
+        if not os.path.exists(abs_target_file) or not os.path.isfile(abs_target_file):
+            return jsonify({"error": f"Dosya bulunamadı: {file_path_relative}"}), 404
+        
+        with open(abs_target_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({"content": content}), 200
+
+    except ValueError as ve:
+        app.logger.error(f"Dosya okuma hatası (ValueError): {str(ve)}")
+        return jsonify({"error": str(ve)}), 400
+    except Exception as e:
+        app.logger.error(f"Dosya okunurken hata: {str(e)}")
+        return jsonify({"error": f"Dosya okunurken sunucu hatası: {str(e)}"}), 500
+
+
+@app.route('/api/execute-command', methods=['POST'])
+def execute_command_route():
+    data = request.json
+    user_id = data.get('userId')
+    project_id = data.get('projectId')
+    file_path_relative = data.get('filePath')
+    command_text = data.get('command')
+
+    if not all([user_id, project_id, file_path_relative, command_text]):
+        return jsonify({"error": "Eksik parametreler: userId, projectId, filePath, command gereklidir."}), 400
+
+    original_content = "" # Hata durumunda bile döndürmek için
+    backup_file_path_actual = None # Gerçek yedek dosyasının yolu
+
+    try:
+        abs_target_file = get_file_path_in_project(user_id, project_id, file_path_relative)
+
+        if not os.path.exists(abs_target_file) or not os.path.isfile(abs_target_file):
+            return jsonify({"error": f"Dosya bulunamadı: {file_path_relative}"}), 404
+
+        with open(abs_target_file, 'r', encoding='utf-8') as f:
+            original_content = f.read()
+        
+        backup_file_path_actual = backup_file(abs_target_file)
+        # Yedekleme başarısız olsa bile devam et, ama logla.
+
+        app.logger.info(f"VM Script çağrılıyor: {VM_SCRIPT_PATH} dosya: {abs_target_file} komut: {command_text}")
+        process = subprocess.run(
+            ['python', VM_SCRIPT_PATH],
+            input=json.dumps({
+                "file_path": abs_target_file,
+                "command": command_text
+            }),
+            text=True,
+            capture_output=True,
+            check=False, # Hata durumunda manuel kontrol için False
+            encoding='utf-8',
+            timeout=60 # VM script için zaman aşımı (saniye)
+        )
+
+        if process.returncode != 0:
+            app.logger.error(f"VM Script hatası (returncode {process.returncode}): {process.stderr}")
+            # Hata durumunda yedekten geri yükle (eğer yedek varsa)
+            if backup_file_path_actual and os.path.exists(backup_file_path_actual):
+                try:
+                    shutil.move(backup_file_path_actual, abs_target_file)
+                    app.logger.info(f"Dosya yedekten geri yüklendi: {backup_file_path_actual} -> {abs_target_file}")
+                except Exception as restore_e:
+                    app.logger.error(f"Yedekten geri yükleme hatası: {restore_e}")
+            return jsonify({"error": f"Cursor AI komutu işlenirken hata (VM Script): {process.stderr or 'Bilinmeyen VM hatası'}"}), 500
+        
+        # VM script dosyayı doğrudan değiştirdi, dosyayı yeniden oku
+        with open(abs_target_file, 'r', encoding='utf-8') as f:
+            new_code_content = f.read()
+
+        diff_output = generate_diff(original_content, new_code_content)
+        app.logger.info(f"Komut başarıyla işlendi: {file_path_relative}")
+
+        return jsonify({
+            "message": "Komut başarıyla işlendi.",
+            "originalCode": original_content,
+            "newCode": new_code_content,
+            "diff": diff_output
+        }), 200
+
+    except ValueError as ve: # get_file_path_in_project'ten gelen güvenlik hatası
+        app.logger.error(f"Execute command hatası (ValueError): {str(ve)}")
+        return jsonify({"error": str(ve)}), 400
+    except subprocess.TimeoutExpired:
+        app.logger.error("VM script zaman aşımına uğradı.")
+        # Zaman aşımı durumunda yedekten geri yükle
+        if backup_file_path_actual and os.path.exists(backup_file_path_actual):
+            try:
+                shutil.move(backup_file_path_actual, abs_target_file)
+                app.logger.info(f"Zaman aşımı sonrası dosya yedekten geri yüklendi: {backup_file_path_actual} -> {abs_target_file}")
+            except Exception as restore_e:
+                app.logger.error(f"Zaman aşımı sonrası yedekten geri yükleme hatası: {restore_e}")
+        return jsonify({"error": "Cursor AI komutu zaman aşımına uğradı."}), 500
+    except Exception as e:
+        app.logger.error(f"Genel sunucu hatası (execute_command): {str(e)}", exc_info=True)
+        # Genel hata durumunda da yedekten geri yüklemeyi dene
+        if backup_file_path_actual and os.path.exists(backup_file_path_actual) and os.path.exists(abs_target_file):
+             # abs_target_file hala varsa ve yedek de varsa geri yükle. Eğer abs_target_file silinmişse, move hata verir.
+            try:
+                if os.path.exists(abs_target_file): # Dosyanın hala var olduğundan emin ol
+                    shutil.move(backup_file_path_actual, abs_target_file)
+                    app.logger.info(f"Genel hata sonrası dosya yedekten geri yüklendi: {backup_file_path_actual} -> {abs_target_file}")
+            except Exception as restore_e:
+                app.logger.error(f"Genel hata sonrası yedekten geri yükleme hatası: {restore_e}")
+        return jsonify({"error": f"Genel sunucu hatası: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    os.makedirs(USER_PROJECTS_BASE_DIR, exist_ok=True)
+    # Geliştirme sunucusu. Üretim için Gunicorn gibi bir WSGI sunucusu kullanın.
+    # Python'un kendi logging'ini kullanmak için:
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]')
+    
+    app.logger.info(f"Flask backend USER_PROJECTS_BASE_DIR: {USER_PROJECTS_BASE_DIR}")
+    app.logger.info(f"Flask backend VM_SCRIPT_PATH: {VM_SCRIPT_PATH}")
+    app.logger.info("Flask backend is starting on port 5001 with debug mode.")
+    app.run(debug=True, port=5001, host='0.0.0.0')
+
+# Çalıştırmak için:
+# 1. Gerekli kütüphaneleri kurun: pip install Flask Flask-CORS
+# 2. `backend` dizininde `user_projects` adında bir klasör oluşturun.
+# 3. `vm_scripts` klasörünün ve içindeki `run_cursor_command.py` dosyasının `backend` klasörüyle aynı seviyede (proje ana dizininde) olduğundan emin olun.
+# 4. Terminalde `backend` dizinine gidin ve `python app.py` komutunu çalıştırın.

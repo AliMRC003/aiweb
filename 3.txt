@@ -1,0 +1,174 @@
+3. VM Script (Python - Sanal Makinede Çalışacak)
+vm_scripts/run_cursor_command.py
+import json
+import sys
+import os
+import time # Simülasyon için
+import re # Basit regex işlemleri için
+
+# Bu scriptin loglarını stderr'e yazdırarak backend tarafından yakalanmasını sağlayabiliriz.
+def log_to_stderr(message):
+    print(message, file=sys.stderr, flush=True)
+
+def apply_ai_changes_to_file(file_path, command_text):
+    """
+    Bu fonksiyon, Cursor AI'yı (CLI veya Puppeteer aracılığıyla) kullanarak
+    belirtilen dosyada verilen komuta göre değişiklik yapar.
+    Bu sadece bir simülasyondur.
+    """
+    log_to_stderr(f"VM Script: Dosya '{file_path}' üzerinde AI komutu '{command_text}' işleniyor...")
+    
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        log_to_stderr(f"VM Script HATA: Dosya bulunamadı veya geçerli değil: {file_path}")
+        sys.exit(10) # Özel bir çıkış kodu
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        original_content_for_check = content # Değişiklik olup olmadığını kontrol etmek için
+        
+        # --- GERÇEK CURSOR AI ENTEGRASYONU BURADA OLACAK ---
+        # Örnek: Cursor CLI çağrısı (varsayımsal)
+        # cursor_cli_command = f"cursor --file \"{file_path}\" --command \"{command_text}\""
+        # process = subprocess.run(cursor_cli_command, shell=True, capture_output=True, text=True, check=True)
+        # content = process.stdout # Ya da Cursor CLI dosyayı doğrudan güncelliyorsa, tekrar oku.
+
+        # Simülasyon: Komuta göre basit bir değişiklik yapalım
+        modified_by_ai = False
+        if "navbar ekle" in command_text.lower():
+            if "<body>" in content:
+                navbar_html = """
+<nav style="background-color: #333; color: white; padding: 10px;">
+  <ul style="list-style-type: none; margin: 0; padding: 0; display: flex;">
+    <li style="margin-right: 20px;"><a href="#" style="color: white; text-decoration: none;">Ana Sayfa</a></li>
+    <li style="margin-right: 20px;"><a href="#" style="color: white; text-decoration: none;">Hakkımızda</a></li>
+    <li><a href="#" style="color: white; text-decoration: none;">İletişim</a></li>
+  </ul>
+</nav>
+"""
+                # Eğer zaten bir navbar varsa ekleme (çok basit bir kontrol)
+                if "<nav" not in content.lower():
+                    content = content.replace("<body>", "<body>" + navbar_html, 1)
+                    modified_by_ai = True
+                else:
+                    log_to_stderr("VM Script: Zaten bir navbar var gibi görünüyor, eklenmedi.")
+            else:
+                content += "\n<!-- AI: body etiketi bulunamadığı için navbar eklenemedi -->"
+                log_to_stderr("VM Script: body etiketi bulunamadı, navbar eklenemedi.")
+        elif "başlık değiştir" in command_text.lower():
+            try:
+                # "başlık değiştir: Yeni Başlığım" veya "başlık değiştir Yeni Başlığım"
+                new_title_match = re.search(r"başlık değiştir[:\s]*(.+)", command_text, re.IGNORECASE)
+                if new_title_match:
+                    new_title = new_title_match.group(1).strip()
+                    if new_title: # Boş başlık olmasın
+                        # <title> etiketini değiştir
+                        content, count_title = re.subn(r"<title>.*?</title>", f"<title>{new_title}</title>", content, 1, flags=re.IGNORECASE | re.DOTALL)
+                        # İlk <h1> etiketini değiştir
+                        content, count_h1 = re.subn(r"<h1>.*?</h1>", f"<h1>{new_title}</h1>", content, 1, flags=re.IGNORECASE | re.DOTALL)
+                        if count_title > 0 or count_h1 > 0:
+                            modified_by_ai = True
+                        else:
+                            log_to_stderr("VM Script: <title> veya <h1> etiketi bulunamadı.")
+                    else:
+                        log_to_stderr("VM Script: Yeni başlık boş olamaz.")    
+                else:
+                    log_to_stderr("VM Script: Başlık değiştirme komutu formatı hatalı.")
+            except Exception as e:
+                log_to_stderr(f"VM Script: Başlık değiştirme sırasında hata: {str(e)}")
+                content += f"\n<!-- AI: Başlık değiştirme hatası: {str(e)} -->"
+        else:
+            content += f"\n<!-- AI: Bilinmeyen komut veya komut uygulanamadı: {command_text} -->"
+            log_to_stderr(f"VM Script: Bilinmeyen komut veya uygulanamadı: {command_text}")
+
+        time.sleep(0.5) # AI işlemini simüle etmek için kısa bir bekleme
+        
+        if modified_by_ai and content != original_content_for_check:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            log_to_stderr(f"VM Script: Dosya '{file_path}' AI tarafından güncellendi.")
+        elif modified_by_ai and content == original_content_for_check:
+            log_to_stderr(f"VM Script: AI bir değişiklik yapmaya çalıştı ancak içerik aynı kaldı. Dosya yazılmadı: {file_path}")
+        else:
+            log_to_stderr(f"VM Script: Dosya '{file_path}' AI tarafından DEĞİŞTİRİLMEDİ.")
+            # Değişiklik yapılmadıysa backend'in bunu bilmesi için farklı bir çıkış kodu döndürülebilir.
+            # Şimdilik 0 ile çıkıyoruz, backend diff ile kontrol edecek.
+
+        # Bu scriptin çıktısı backend tarafından okunmuyor, dosya doğrudan değiştiriliyor.
+        # O yüzden buraya print(content) yazmak gereksiz.
+        return # Başarılıysa bir şey döndürmeye gerek yok.
+
+    except Exception as e:
+        log_to_stderr(f"VM Script HATA (apply_ai_changes_to_file): {str(e)}")
+        # Hata durumunda backend'in anlayacağı bir çıkış kodu ile çık
+        sys.exit(1)
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--test": # Basit bir test modu
+        test_file = "test_page.html"
+        test_command = "navbar ekle"
+        if len(sys.argv) > 2: test_command = sys.argv[2]
+
+        # Test için geçici dosya oluştur
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write("<html><head><title>Test Sayfası</title></head><body><h1>Merhaba Dünya</h1></body></html>")
+        log_to_stderr(f"VM Script TEST MODU: Dosya '{test_file}', Komut: '{test_command}'")
+        try:
+            apply_ai_changes_to_file(test_file, test_command)
+            log_to_stderr("VM Script TEST MODU: apply_ai_changes_to_file tamamlandı.")
+            with open(test_file, "r", encoding="utf-8") as f:
+                log_to_stderr("VM Script TEST MODU: Güncellenmiş dosya içeriği:")
+                log_to_stderr(f.read())
+        finally:
+            if os.path.exists(test_file):
+                os.remove(test_file) # Test dosyasını sil
+        sys.exit(0)
+
+
+    # Backend'den gelen JSON girdisini stdin'den oku
+    input_str = ""
+    try:
+        input_str = sys.stdin.read()
+        if not input_str.strip():
+            log_to_stderr("VM Script HATA: stdin'den boş girdi alındı.")
+            sys.exit(2) # Boş girdi için özel çıkış kodu
+
+        input_data = json.loads(input_str)
+        file_to_modify = input_data.get("file_path")
+        ai_command = input_data.get("command")
+
+        if not file_to_modify or not ai_command:
+            log_to_stderr(f"VM Script HATA: Eksik parametreler (file_path, command). Alınan: {input_data}")
+            sys.exit(3) # Eksik parametre için özel çıkış kodu
+        
+        apply_ai_changes_to_file(file_to_modify, ai_command)
+        
+        log_to_stderr(f"VM Script: Görev '{file_to_modify}' için başarıyla tamamlandı.")
+        sys.exit(0) # Başarılı çıkış
+
+    except json.JSONDecodeError:
+        log_to_stderr(f"VM Script HATA: Geçersiz JSON girdisi. Alınan: '{input_str[:200]}...'") # Girdinin bir kısmını logla
+        sys.exit(4) # JSON decode hatası için özel çıkış kodu
+    except SystemExit: # sys.exit çağrılarını tekrar yakalamamak için
+        raise
+    except Exception as e:
+        log_to_stderr(f"VM Script Genel HATA (__main__): {str(e)}")
+        sys.exit(5) # Diğer genel hatalar için özel çıkış kodu
+
+Önemli Hususlar ve Sonraki Adımlar:
+Güvenlik: Bu, en kritik konudur.
+Kullanıcı kimlik doğrulaması ve yetkilendirme (örn: JWT, OAuth). NextAuth.js (frontend için) ve backend'de token doğrulaması.
+Path Traversal saldırılarına karşı tüm dosya yolu işlemlerinde sıkı kontroller.
+Giriş doğrulama (XSS, enjeksiyon saldırılarına karşı).
+VM'lerde kullanıcıların birbirlerinin dosyalarına erişememesi için güçlü izolasyon (sandbox, container'lar).
+API endpoint'lerinin güvenliği (rate limiting, yetkilendirme).
+Cursor AI Entegrasyonu: vm_scripts/run_cursor_command.py içindeki simülasyonu, Cursor'ın gerçek CLI'ı veya Puppeteer otomasyonu ile değiştirmeniz gerekecek. Cursor'ın nasıl bir arayüz sunduğuna bağlı olacaktır.
+VM Yönetimi: Kullanıcı başına VM oluşturma, başlatma, durdurma ve kaynak yönetimi (belki Kubernetes, Docker Swarm veya bulut sağlayıcınızın servisleri ile). n8n veya özel script'ler bu konuda yardımcı olabilir.
+Dosya Ağacı: Frontend'de kullanıcıya proje dosyalarını listeleyecek ve seçmesini sağlayacak bir dosya ağacı bileşeni eklenmelidir.
+Monaco/CodeMirror Entegrasyonu: Frontend'de textarea yerine tam teşekküllü bir kod editörü entegre edilmelidir.
+Diff Görüntüleyici: jsdiff, diff-match-patch veya react-diff-viewer gibi kütüphanelerle daha gelişmiş bir diff görünümü sağlanmalıdır.
+Hata Yönetimi ve Günlükleme: Hem frontend hem de backend'de kapsamlı hata yönetimi ve olayların günlüğe kaydedilmesi.
+Asenkron İşlemler ve Kuyruklar: Uzun süren AI komutları için (örn: Redis + Celery, RabbitMQ) bir mesaj kuyruğu sistemi kullanmak, backend'in yanıt vermesini hızlandırabilir ve kullanıcı deneyimini iyileştirebilir.
+Veritabanı: Kullanıcı bilgileri, proje meta verileri vb. için bir veritabanı (PostgreSQL, MongoDB) gerekebilir.
+Yapılandırma Yönetimi: Hassas bilgileri (API anahtarları, veritabanı şifreleri) koddan ayırmak için .env dosyaları veya bulut yapılandırma servisleri kullanın.
